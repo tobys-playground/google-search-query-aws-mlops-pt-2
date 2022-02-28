@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >
+  This CloudFormation template creates/updates
+  1) a Lambda function that invokes a SageMaker Endpoint 
+  2) an API Gateway that handles requests for our Endpoint over the Internet
+
+Parameters:
+  EndPointName:
+    Type: String
+    Default: enter-your-sm-endpoint-here
+  ApiGatewayStageName:
+    Type: String
+    Default: predict 
+
+Resources:
+  LambdaFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+              - lambda.amazonaws.com
+          Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: LambdaFunctionExecutionPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: '*'
+      - PolicyName: InvokeSageMakerEndpointPolicy
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action:
+              - sagemaker:InvokeEndpoint
+            Resource: '*'
+
+  LambdaFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code: 
+        ZipFile: |
+          import os 
+          import boto3
+          import json
+          
+          ENDPOINT_NAME = os.environ['EndpointName']
+          runtime= boto3.client('runtime.sagemaker')
+
+          def handler(event, context):
+              print("Received event: " + json.dumps(event, indent=2))
+
+              data = json.loads(json.dumps(event))
+              payload = data['data']
+              print(payload)
+
+              response = runtime.invoke_endpoint(EndpointName=ENDPOINT_NAME,
+                                                ContentType='text/csv',
+                                                Body=payload)
+              print(response)
+              result = json.loads(response['Body'].read().decode())
+
+              return result
+      Environment: 
+        Variables:
+          EndpointName:
+            !Ref EndPointName
+      Runtime: python3.9
+      Timeout: 10
+      Handler: index.handler
+      Role: !GetAtt LambdaFunctionRole.Arn
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Description: API Gateway for SageMaker Endpoint
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      Name: api-gateway-sagemaker-endpoint
+
+  ApiGatewayRootMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      AuthorizationType: NONE
+      HttpMethod: POST
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt LambdaFunction.Arn
+      ResourceId: !GetAtt ApiGateway.RootResourceId
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - ApiGatewayRootMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: !Ref ApiGatewayStageName
+
+Outputs:
+  ApiGatewayInvokeURL:
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${ApiGatewayStageName}

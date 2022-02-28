@@ -1,0 +1,203 @@
+#!/usr/bin/env python
+
+from __future__ import print_function
+import os
+import sys
+import traceback
+import json
+import torch
+import pandas as pd
+from tqdm import tqdm
+from torch.utils.data import Dataset
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import f1_score
+import re 
+from transformers import GPT2Tokenizer, TrainingArguments, Trainer, GPTNeoForCausalLM #,pipeline, convert_graph_to_onnx
+
+
+prefix = '/opt/ml/'
+
+input_path = prefix + 'input/data'
+output_path = os.path.join(prefix, 'output')
+model_path = os.path.join(prefix, 'model')
+param_path = os.path.join(prefix, 'input/config/hyperparameters.json')
+channel_name='training'
+training_path = os.path.join(input_path, channel_name)
+
+# Dataset class
+class IntentDataset(Dataset):
+    def __init__(self, txt_list, label_list, tokenizer, max_length):  
+        self.input_ids = []
+        self.attn_masks = []
+        for txt, label in zip(txt_list, label_list):
+            # prepare the text
+            prep_txt = f'<|startoftext|>Query: {txt} Intent: {label}<|endoftext|>'
+            # tokenize
+            encodings_dict = tokenizer(prep_txt, truncation=True,
+                                       max_length=max_length, padding='max_length')
+
+            self.input_ids.append(torch.tensor(encodings_dict['input_ids']))
+            self.attn_masks.append(torch.tensor(encodings_dict['attention_mask']))
+
+    def __len__(self):
+        return len(self.input_ids)
+
+    def __getitem__(self, idx):
+        return self.input_ids[idx], self.attn_masks[idx]
+
+# Data load function 
+def load_intent_dataset(tokenizer, file_path):
+    df = pd.read_csv(file_path)
+    df = df[['Query', 'Intent']]
+    df = df.rename(columns={"Query": "text", "Intent": "label"})
+    df = df.sample(100, random_state=1)
+    
+    # divide into test and train datasets
+    X_train, X_test, y_train, y_test = \
+            train_test_split(df['text'].tolist(), df['label'].tolist(),
+            shuffle=True, test_size=0.05, random_state=1)
+
+    # get max length
+    max_length_train = max([len(tokenizer.encode(text)) for text in X_train])
+    max_length_test = max([len(tokenizer.encode(text)) for text in X_test])
+    max_length = max([max_length_train, max_length_test]) + 10  #for special tokens (sos and eos) and fillers
+    max_length = max(max_length, 100)
+    print(f'Setting max length as {max_length}')
+
+    # format into IntentDataset class
+    train_dataset = IntentDataset(X_train, y_train, tokenizer, max_length=max_length)
+    test_dataset = IntentDataset(X_test, y_test, tokenizer, max_length=max_length)
+
+    # return
+    return train_dataset, test_dataset, y_test, max_length 
+
+def predict_intent(model, tokenizer, text, max_length):
+
+    prompt = f'<|startoftext|>Query: {text} Intent: '
+    generated = tokenizer(f'<|startoftext|> {prompt}', return_tensors='pt').input_ids.cuda()
+    sample_outputs = model.generate(generated, do_sample=False, top_k=50, max_length=max_length, top_p=0.90, 
+            temperature=0, num_return_sequences=0)
+    pred_text = tokenizer.decode(sample_outputs[0], skip_special_tokens=True)
+    try:
+        pred_intent = re.findall('(?<=Intent: ).*', pred_text)[-1]
+    except:
+        pred_intent = 'None'
+
+    return pred_text, pred_intent
+
+# compute prediction on test data
+
+def get_f1_score(model, tokenizer, y_test, test_dataset, max_length):
+
+    predicted = []
+
+    for text in tqdm(test_dataset):
+    # predict intent on test data
+        _, pred_intent = predict_intent(model, tokenizer, text, max_length)
+        predicted.append(pred_intent)
+
+    return(f1_score(y_test, predicted, average='macro'))
+
+# The function to execute the training.
+def train():
+    print('Starting the training.')
+    try:
+        # Read in any hyperparameters that the user passed with the training job
+        with open(param_path, 'r') as tc:
+            trainingParams = json.load(tc)
+
+        # Take the set of files and read them all into a single pandas dataframe
+        input_file_path = [os.path.join(training_path, file) for file in os.listdir(training_path)]
+        if len(input_file_path) == 0:
+            raise ValueError(('There are no files in {}.\n' +
+                              'This usually indicates that the channel ({}) was incorrectly specified,\n' +
+                              'the data specification in S3 was incorrectly specified or the role specified\n' +
+                              'does not have permission to access the data.').format(training_path, channel_name))
+
+        model_name = 'EleutherAI/gpt-neo-125M' #"EleutherAI/gpt-neo-1.3B"
+        seed = 42
+
+        # seed
+        torch.manual_seed(seed)
+    
+        print('Loading model...')
+        # load tokenizer and model
+        tokenizer = GPT2Tokenizer.from_pretrained(model_name, bos_token='<|startoftext|>',
+                                          eos_token='<|endoftext|>', pad_token='<|pad|>')
+        model = GPTNeoForCausalLM.from_pretrained(model_name)
+        model.resize_token_embeddings(len(tokenizer))
+
+        print('Loading dataset...')
+        train_dataset, test_dataset, y_test, max_length = load_intent_dataset(tokenizer, input_file_path[0])
+
+        num_epoch = trainingParams.get('epoch', None)
+        if num_epoch is not None:
+            num_epoch = int(num_epoch)
+
+        print('Start training...')
+        training_args = TrainingArguments(output_dir='results', num_train_epochs=num_epoch, load_best_model_at_end=True,
+                                        evaluation_strategy ='steps', save_strategy='steps', save_steps = 20, eval_steps=10,
+                                        logging_steps=50, per_device_train_batch_size=10, per_device_eval_batch_size=10,
+                                        weight_decay=0.01, logging_dir='logs')
+
+        Trainer(model=model, args=training_args, train_dataset=train_dataset,
+                eval_dataset=test_dataset, data_collator=lambda data: {'input_ids': torch.stack([f[0] for f in data]),
+                                                                    'attention_mask': torch.stack([f[1] for f in data]),
+                                                                    'labels': torch.stack([f[0] for f in data])}).train()
+
+
+        get_f1_score(model, tokenizer, y_test, test_dataset, max_length)
+        
+        # save model
+        model.save_pretrained(model_path)
+
+        # Conversion to ONNX if needed (Optional)
+        # nlp = pipeline(
+        #         'text-generation',
+        #         model=model,
+        #         tokenizer=tokenizer)
+        # text = "Best shoes 2021"
+        # prompt = f'<|startoftext|>Query: {text} Intent: <|endoftext|>'
+        # encodings_dict = tokenizer(prompt, truncation=True, max_length=max_length, padding='max_length', return_tensors="pt")
+        # with torch.no_grad():
+        #     (
+        #         input_names,
+        #         output_names,
+        #         dynamic_axes,
+        #         tokens,
+        #     ) = convert_graph_to_onnx.infer_shapes(nlp, 'pt')
+        #     ordered_input_names, model_args = convert_graph_to_onnx.ensure_valid_input(
+        #         nlp.model, tokens, input_names
+        #     )           
+        # torch.onnx.export(
+        #     model,
+        #     (encodings_dict['input_ids'], encodings_dict['attention_mask']),
+        #     model_path + '/model.onnx',
+        #     input_names=input_names,
+        #     output_names=output_names,
+        #     dynamic_axes=dynamic_axes,
+        #     do_constant_folding=True,
+        #     use_external_data_format=True,
+        #     enable_onnx_checker=True,
+        #     opset_version=13,
+        # )
+        # print('Conversion to ONNX format complete.')
+
+        print('Training complete.')
+
+    except Exception as e:
+        # Write out an error file. This will be returned as the failureReason in the
+        # DescribeTrainingJob result.
+        trc = traceback.format_exc()
+        with open(os.path.join(output_path, 'failure'), 'w') as s:
+            s.write('Exception during training: ' + str(e) + '\n' + trc)
+        # Printing this causes the exception to be in the training job logs, as well.
+        print('Exception during training: ' + str(e) + '\n' + trc, file=sys.stderr)
+        
+        sys.exit(255) #training failed
+
+if __name__ == '__main__':
+    train()
+
+    
+    sys.exit(0) #training succeeded
