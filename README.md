@@ -10,7 +10,7 @@ This part of the MLOps workflow focuses on the **second CodePipeline (shaded in 
 
 1) A commit made to the **GitHub/CodeCommit** repository will trigger the CodePipeline and start the CodeBuild job
 2) **CodeBuild** will create a **new custom Docker Training/Inference image** that will be pushed to **Elastic Container Registry**
-3) A **Lambda function** will then **start the Step Functions State Machine** managed by the first CodePipeline (Link to Repo: ). Alternatively, a change to the data stored in an **S3 bucket** will also start the State Machine. 
+3) A **Lambda function** will then **start the Step Functions State Machine** managed by the first CodePipeline (Link to Repo: ). Alternatively, a change to the data stored in a **S3 bucket** will also start the State Machine
 4) The GPT-Neo model will be trained and deployed as an endpoint in **SageMaker** using our custom image. If this is successful, the State Machine should look as below:
 
 
