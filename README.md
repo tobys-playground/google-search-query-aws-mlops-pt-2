@@ -17,4 +17,4 @@ This part of the MLOps workflow focuses on the second CodePipeline (shaded in or
 5) CodePipeline will wait for the user's approval before continuing. The user can check to see if the model and endpoint are in SageMaker
 
 6) Once approved, CodePipeline will run a **Lambda function** to store training and artifact details in a simple Model Registry powered by **DynamoDB** 
-7) Finally, CodePipeline will **run another Lambda function to create a Lambda Function and an API Gateway via CloudFormation** so that users can invoke the SageMaker endpoint over the Internet.
+7) Finally, CodePipeline will **run another Lambda function to create/update a Lambda Function and an API Gateway via CloudFormation** so that users can invoke the SageMaker endpoint over the Internet.
