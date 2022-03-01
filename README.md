@@ -4,7 +4,7 @@
 
 ![image](https://user-images.githubusercontent.com/81354022/156029599-5d241136-8122-41df-8f1c-ff3e6c27d504.png)
 
-This part of the MLOps workflow focuses on the **second CodePipeline (shaded in orange)** that will create a new custom Training/Inference image when there is a change to the code, and train and deploy a **Bring-Your-Own-Container GPT-Neo model** with this image.
+This part of the MLOps (Maturity level 3) workflow focuses on the **second CodePipeline (shaded in orange)** that will create a new custom Training/Inference image when there is a change to the code, and train and deploy a **Bring-Your-Own-Container GPT-Neo model** with this image.
 
 ## Steps
 
