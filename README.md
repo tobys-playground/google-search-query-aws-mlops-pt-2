@@ -26,7 +26,7 @@ This part of the MLOps (Maturity level 3) workflow focuses on the **second CodeP
 
 ![image](https://user-images.githubusercontent.com/81354022/156136580-1e8c145a-49c6-4ed7-8dc5-1fc4d41189ba.png)
 
-6) Once approved, CodePipeline will run a **Lambda function** to store training and artifact details in a simple Model Registry powered by **DynamoDB**:
+6) Once approved, CodePipeline will run a **Lambda function** to store training and artifact details in a simple model registry powered by **DynamoDB**:
 
 ![image](https://user-images.githubusercontent.com/81354022/156136202-661d8e85-671a-4fa0-8a8b-181dbdb7bcfb.png)
 
